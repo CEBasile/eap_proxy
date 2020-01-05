@@ -412,10 +412,10 @@ def make_logger(use_syslog=False, debug=False):
     return logger
 
 
-### EdgeOS
+### OpenWrt
 
 
-class EdgeOS(object):
+class OpenWrt(object):
     def __init__(self, log):
         self.log = log
 
@@ -426,18 +426,8 @@ class EdgeOS(object):
             self.log.warn("%s exited %d", args, ex.returncode)
             return ex.returncode, ex.output
 
-    def run_vyatta_interfaces(self, name, *args):
-        self.run("/opt/vyatta/sbin/vyatta-interfaces.pl", "--dev", name, *args)
-
     def restart_dhclient(self, name):
-        # This isn't working:
-        # self.run_vyatta_interfaces(name, "--dhcp", "release")
-        # self.run_vyatta_interfaces(name, "--dhcp", "renew")
-        # The "renew" command emits:
-        #   eth0.0 is not using DHCP to get an IP address
-        # So we emulate it ourselves.
-        self.stop_dhclient(name)
-        self.start_dhclient(name)
+        self.run("systemctl", "restart", "dnsmasq@%s" % name)
 
     @staticmethod
     def dhclient_pathnames(ifname):
@@ -449,28 +439,14 @@ class EdgeOS(object):
             "/var/run/dhclient_%s.leases" % filename,
         )  # -lf
 
-    def stop_dhclient(self, ifname):
-        """Stop dhclient on `ifname` interface."""
-        # Emulates vyatta-interfaces.pl's behavior
-        cf, pf, lf = self.dhclient_pathnames(ifname)
-        self.run("/sbin/dhclient", "-q", "-cf", cf, "-pf", pf, "-lf", lf, "-r", ifname)
-        safe_unlink(pf)
-
-    def start_dhclient(self, ifname):
-        """Start dhclient on `ifname` interface"""
-        # Emulates vyatta-interfaces.pl's behavior
-        cf, pf, lf = self.dhclient_pathnames(ifname)
-        killpidfile(pf, signal.SIGTERM)
-        safe_unlink(pf)
-        self.run("/sbin/dhclient", "-q", "-nw", "-cf", cf, "-pf", pf, "-lf", lf, ifname)
-
-    def setmac(self, ifname, mac):
+    def setmac(self, mac):
         """Set interface `ifname` mac to `mac`, which may be either a packed
            string or in "aa:bb:cc:dd:ee:ff" format."""
         # untested, perhaps I should use /bin/ip or ioctl instead.
         if len(mac) == 6:
             mac = strmac(mac)
-        self.run_vyatta_interfaces(ifname, "--set-mac", mac)
+        self.run("/sbin/uci", "set" "network.wan_dev.macaddr=%s" % mac)
+        self.run("/sbin/uci", "commit")
 
     @staticmethod
     def getmac(ifname):
@@ -586,7 +562,7 @@ class EAPProxy(object):
 
     def __init__(self, args, log):
         self.args = args
-        self.os = EdgeOS(log)
+        self.os = OpenWrt(log)
         self.log = log
         self.s_rtr = rawsocket(args.if_rtr, promisc=args.promiscuous)
         self.s_wan = rawsocket(args.if_wan, promisc=args.promiscuous)
